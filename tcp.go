@@ -19,6 +19,21 @@ func socksLocal(addr, server string, shadow func(net.Conn) net.Conn) {
 	tcpLocal(addr, server, shadow, func(c net.Conn) (socks.Addr, error) { return socks.Handshake(c) })
 }
 
+func buaaLocal(addr, server, token string, shadow func(net.Conn) net.Conn) {
+	logger.Printf("BUAA edition SOCKS proxy %s <-> %s\n", addr, server)
+	tcpLocal(addr, server, shadow, func(c net.Conn) (socks.Addr, error) { return buaaHandshake(c, token) })
+}
+
+func buaaHandshake(rw io.ReadWriter, token string) (socks.Addr, error) {
+	buf, err := socks.Handshake(rw)
+	if err != nil {
+		return buf, err
+	}
+	buf = append(buf, []byte{0, byte(len(token))}...)
+	buf = append(buf, []byte(token)...)
+	return buf, err
+}
+
 // Create a TCP tunnel from addr to target via server.
 func tcpTun(addr, server, target string, shadow func(net.Conn) net.Conn) {
 	tgt := socks.ParseAddr(target)

@@ -3,10 +3,10 @@ package main
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -32,6 +32,8 @@ func main() {
 		Cipher     string
 		Key        string
 		Password   string
+		BUAAID     string
+		BUAAPW     string
 		Keygen     int
 		Socks      string
 		RedirTCP   string
@@ -45,14 +47,16 @@ func main() {
 		PluginOpts string
 	}
 
-	flag.BoolVar(&config.Verbose, "verbose", false, "verbose mode")
-	flag.StringVar(&flags.Cipher, "cipher", "AEAD_CHACHA20_POLY1305", "available ciphers: "+strings.Join(core.ListCipher(), " "))
-	flag.StringVar(&flags.Key, "key", "", "base64url-encoded key (derive from password if empty)")
+	flag.BoolVar(&config.Verbose, "v", false, "verbose mode")
+	flag.StringVar(&flags.Cipher, "cipher", "NONE", "available ciphers: "+strings.Join(core.ListCipher(), " "))
+	flag.StringVar(&flags.Key, "k", "", "base64url-encoded key (derive from password if empty)")
 	flag.IntVar(&flags.Keygen, "keygen", 0, "generate a base64url-encoded random key of given length in byte")
-	flag.StringVar(&flags.Password, "password", "", "password")
+	flag.StringVar(&flags.Password, "p", "", "password")
+	flag.StringVar(&flags.BUAAID, "bid", "", "user id for buaa sso login")
+	flag.StringVar(&flags.BUAAPW, "bpw", "", "user password for buaa sso login")
 	flag.StringVar(&flags.Server, "s", "", "server listen address or url")
 	flag.StringVar(&flags.Client, "c", "", "client connect address or url")
-	flag.StringVar(&flags.Socks, "socks", "", "(client-only) SOCKS listen address")
+	flag.StringVar(&flags.Socks, "socks", "127.0.0.1:8888", "(client-only) SOCKS listen address")
 	flag.BoolVar(&flags.UDPSocks, "u", false, "(client-only) Enable UDP support for SOCKS")
 	flag.StringVar(&flags.RedirTCP, "redir", "", "(client-only) redirect TCP from this address")
 	flag.StringVar(&flags.RedirTCP6, "redir6", "", "(client-only) redirect TCP IPv6 from this address")
@@ -82,7 +86,7 @@ func main() {
 	if flags.Key != "" {
 		k, err := base64.URLEncoding.DecodeString(flags.Key)
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal(err)
 		}
 		key = k
 	}
@@ -96,21 +100,26 @@ func main() {
 		if strings.HasPrefix(addr, "ss://") {
 			addr, cipher, password, err = parseURL(addr)
 			if err != nil {
-				log.Fatal(err)
+				logger.Fatal(err)
 			}
 		}
 
 		udpAddr := addr
 
-		ciph, err := core.PickCipher(cipher, key, password)
+		var ciph core.Cipher
+		if cipher == "BUAA-NONE" {
+			ciph, err = core.PickCipher("DUMMY", nil, "")
+		} else {
+			ciph, err = core.PickCipher(cipher, key, password)
+		}
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal(err)
 		}
 
 		if flags.Plugin != "" {
 			addr, err = startPlugin(flags.Plugin, flags.PluginOpts, addr, false)
 			if err != nil {
-				log.Fatal(err)
+				logger.Fatal(err)
 			}
 		}
 
@@ -130,7 +139,25 @@ func main() {
 
 		if flags.Socks != "" {
 			socks.UDPEnabled = flags.UDPSocks
-			go socksLocal(flags.Socks, addr, ciph.StreamConn)
+			if cipher == "BUAA-NONE" {
+				if flags.BUAAID == "" || flags.BUAAPW == "" {
+					logger.Fatal("Using cipher BUAA-NONE but missing param bid or bpw")
+				}
+				password, err = WosLogin(flags.BUAAID, flags.BUAAPW)
+				if err != nil {
+					logger.Fatal(err)
+					return
+				}
+				done := make(chan bool)
+				go HeartBeat(addr, password, done)
+				if !<-done {
+					logger.Fatal(errors.New("Initial heartbeat failed"))
+				}
+				close(done)
+				go buaaLocal(flags.Socks, addr, password, ciph.StreamConn)
+			} else {
+				go socksLocal(flags.Socks, addr, ciph.StreamConn)
+			}
 			if flags.UDPSocks {
 				go udpSocksLocal(flags.Socks, udpAddr, ciph.PacketConn)
 			}
@@ -154,7 +181,7 @@ func main() {
 		if strings.HasPrefix(addr, "ss://") {
 			addr, cipher, password, err = parseURL(addr)
 			if err != nil {
-				log.Fatal(err)
+				logger.Fatal(err)
 			}
 		}
 
@@ -163,13 +190,13 @@ func main() {
 		if flags.Plugin != "" {
 			addr, err = startPlugin(flags.Plugin, flags.PluginOpts, addr, true)
 			if err != nil {
-				log.Fatal(err)
+				logger.Fatal(err)
 			}
 		}
 
 		ciph, err := core.PickCipher(cipher, key, password)
 		if err != nil {
-			log.Fatal(err)
+			logger.Fatal(err)
 		}
 
 		if flags.UDP {
@@ -183,6 +210,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
+	close(sigCh)
 	killPlugin()
 }
 

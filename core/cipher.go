@@ -48,6 +48,7 @@ func ListCipher() []string {
 	for k := range aeadList {
 		l = append(l, k)
 	}
+	l = append(l, "BUAA-NONE")
 	sort.Strings(l)
 	return l
 }
@@ -55,7 +56,6 @@ func ListCipher() []string {
 // PickCipher returns a Cipher of the given name. Derive key from password if given key is empty.
 func PickCipher(name string, key []byte, password string) (Cipher, error) {
 	name = strings.ToUpper(name)
-
 	switch name {
 	case "DUMMY":
 		return &dummy{}, nil
